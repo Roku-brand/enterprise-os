@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 const timestamps = {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -28,6 +28,17 @@ export const projects = sqliteTable("projects", {
   ownerAgentId: text("owner_agent_id"),
   ...timestamps,
 }, (table) => [index("projects_owner_email_idx").on(table.ownerEmail)]);
+
+export const projectAgents = sqliteTable("project_agents", {
+  ownerEmail: text("owner_email").notNull(),
+  projectId: text("project_id").notNull(),
+  agentId: text("agent_id").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  primaryKey({ columns: [table.projectId, table.agentId] }),
+  index("project_agents_owner_email_idx").on(table.ownerEmail),
+  index("project_agents_agent_id_idx").on(table.agentId),
+]);
 
 export const reports = sqliteTable("reports", {
   id: text("id").primaryKey(),
