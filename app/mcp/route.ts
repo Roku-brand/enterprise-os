@@ -1,11 +1,11 @@
 import { and, desc, eq, like, or } from "drizzle-orm";
 import { getDb } from "../../db";
-import { agents, projects, reports } from "../../db/schema";
+import { agents, projectAgents, projects, reports } from "../../db/schema";
 import { authorizeMcpRequest, MCP_READ_SCOPE, MCP_WRITE_SCOPE, withMcpCors } from "../../lib/mcp-auth";
 
 const readSecurity = [{ type: "oauth2", scopes: [MCP_READ_SCOPE] }];
 const writeSecurity = [{ type: "oauth2", scopes: [MCP_WRITE_SCOPE] }];
-const writeTools = new Set(["create_project", "save_agent", "create_department_report", "update_report_status"]);
+const writeTools = new Set(["create_project", "assign_agents_to_project", "save_agent", "create_department_report", "update_report_status"]);
 
 const tools = [
   {
@@ -32,8 +32,17 @@ const tools = [
     inputSchema: { type: "object", properties: {
       name: { type: "string", description: "事業名" }, summary: { type: "string", description: "目的や提供価値" },
       repositoryUrl: { type: "string", description: "https://github.com/ で始まるURL。未連携なら省略" },
-      status: { type: "string", enum: ["未着手", "進行中", "保留", "完了"] }, ownerAgentId: { type: "string", description: "担当AIのID。未設定なら省略" },
+      status: { type: "string", enum: ["未着手", "進行中", "保留", "完了"] }, agentIds: { type: "array", items: { type: "string" }, description: "事業チームへ配属するAIのID一覧" },
     }, required: ["name", "status"], additionalProperties: false }, securitySchemes: writeSecurity,
+    annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: false },
+  },
+  {
+    name: "assign_agents_to_project", title: "AIを事業チームへ配属",
+    description: "既存プロジェクトの事業チームを、指定したAIエージェントの一覧へ更新します。空の一覧で全員を解除します。",
+    inputSchema: { type: "object", properties: {
+      projectId: { type: "string", description: "配属先プロジェクトのID" },
+      agentIds: { type: "array", items: { type: "string" }, description: "配属するAIエージェントのID一覧" },
+    }, required: ["projectId", "agentIds"], additionalProperties: false }, securitySchemes: writeSecurity,
     annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: false },
   },
   {
@@ -68,6 +77,7 @@ function jsonRpc(id: unknown, result: unknown, status = 200) { return Response.j
 function rpcError(id: unknown, code: number, message: string, status = 200) { return Response.json({ jsonrpc: "2.0", id, error: { code, message } }, { status, headers: corsHeaders() }); }
 function textResult(text: string, structuredContent: unknown) { return { content: [{ type: "text", text }], structuredContent }; }
 function clean(value: unknown, max = 4000) { return typeof value === "string" ? value.trim().slice(0, max) : ""; }
+function idList(value: unknown) { return Array.isArray(value) ? [...new Set(value.map((item) => clean(item, 80)).filter(Boolean))].slice(0, 50) : []; }
 
 function ownerEmail() {
   const value = process.env.APP_OWNER_EMAIL?.trim().toLowerCase();
@@ -80,12 +90,14 @@ async function toolResult(name: string, args: Record<string, unknown>) {
   const owner = ownerEmail();
 
   if (name === "get_organization_dashboard") {
-    const [projectRows, agentRows, reportRows] = await Promise.all([
+    const [projectRows, agentRows, reportRows, assignmentRows] = await Promise.all([
       db.select().from(projects).where(eq(projects.ownerEmail, owner)).orderBy(desc(projects.updatedAt)),
       db.select().from(agents).where(eq(agents.ownerEmail, owner)).orderBy(desc(agents.updatedAt)),
       db.select().from(reports).where(eq(reports.ownerEmail, owner)).orderBy(desc(reports.updatedAt)),
+      db.select().from(projectAgents).where(eq(projectAgents.ownerEmail, owner)),
     ]);
-    return textResult("登録済みの組織データを取得しました。未登録の数値は含みません。", { projects: projectRows, agents: agentRows, reports: reportRows });
+    const projectsWithTeams = projectRows.map((project) => ({ ...project, agentIds: assignmentRows.filter((row) => row.projectId === project.id).map((row) => row.agentId) }));
+    return textResult("登録済みの組織データを取得しました。未登録の数値は含みません。", { projects: projectsWithTeams, agents: agentRows, reports: reportRows });
   }
   if (name === "list_organization_agents") {
     const rows = await db.select().from(agents).where(eq(agents.ownerEmail, owner)).orderBy(desc(agents.updatedAt));
@@ -95,7 +107,10 @@ async function toolResult(name: string, args: Record<string, unknown>) {
     const query = clean(args.query, 200);
     if (!query) return { isError: true, content: [{ type: "text", text: "検索語を入力してください。" }] };
     const rows = await db.select().from(projects).where(and(eq(projects.ownerEmail, owner), or(like(projects.name, `%${query}%`), like(projects.repositoryUrl, `%${query}%`)))).limit(20);
-    return textResult(rows.length ? `${rows.length}件の事業が見つかりました。` : "一致する事業はありません。", { projects: rows });
+    const ids = new Set(rows.map((row) => row.id));
+    const assignments = rows.length ? await db.select().from(projectAgents).where(eq(projectAgents.ownerEmail, owner)) : [];
+    const withTeams = rows.map((project) => ({ ...project, agentIds: assignments.filter((row) => ids.has(row.projectId) && row.projectId === project.id).map((row) => row.agentId) }));
+    return textResult(rows.length ? `${rows.length}件の事業が見つかりました。` : "一致する事業はありません。", { projects: withTeams });
   }
   if (name === "create_project") {
     const projectName = clean(args.name, 120);
@@ -103,8 +118,25 @@ async function toolResult(name: string, args: Record<string, unknown>) {
     const repositoryUrl = clean(args.repositoryUrl, 500);
     if (!projectName || !["未着手", "進行中", "保留", "完了"].includes(status)) return { isError: true, content: [{ type: "text", text: "事業名と有効な状態が必要です。" }] };
     if (repositoryUrl && !repositoryUrl.startsWith("https://github.com/")) return { isError: true, content: [{ type: "text", text: "GitHub URLは https://github.com/ から入力してください。" }] };
-    const [row] = await db.insert(projects).values({ id: crypto.randomUUID(), ownerEmail: owner, name: projectName, summary: clean(args.summary), repositoryUrl, status, ownerAgentId: clean(args.ownerAgentId, 80) || null }).returning();
-    return textResult("事業プロジェクトを登録しました。", { project: row });
+    const availableAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.ownerEmail, owner));
+    const availableIds = new Set(availableAgents.map((agent) => agent.id));
+    const agentIds = idList(args.agentIds).filter((id) => availableIds.has(id));
+    const projectId = crypto.randomUUID();
+    const [row] = await db.insert(projects).values({ id: projectId, ownerEmail: owner, name: projectName, summary: clean(args.summary), repositoryUrl, status, ownerAgentId: agentIds[0] ?? null }).returning();
+    if (agentIds.length) await db.insert(projectAgents).values(agentIds.map((agentId) => ({ ownerEmail: owner, projectId, agentId })));
+    return textResult("事業プロジェクトを登録しました。", { project: { ...row, agentIds } });
+  }
+  if (name === "assign_agents_to_project") {
+    const projectId = clean(args.projectId, 80);
+    const projectRows = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.id, projectId), eq(projects.ownerEmail, owner))).limit(1);
+    if (!projectRows.length) return { isError: true, content: [{ type: "text", text: "指定した事業が見つかりません。" }] };
+    const availableAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.ownerEmail, owner));
+    const availableIds = new Set(availableAgents.map((agent) => agent.id));
+    const agentIds = idList(args.agentIds).filter((id) => availableIds.has(id));
+    await db.delete(projectAgents).where(and(eq(projectAgents.projectId, projectId), eq(projectAgents.ownerEmail, owner)));
+    if (agentIds.length) await db.insert(projectAgents).values(agentIds.map((agentId) => ({ ownerEmail: owner, projectId, agentId })));
+    await db.update(projects).set({ ownerAgentId: agentIds[0] ?? null, updatedAt: new Date().toISOString() }).where(and(eq(projects.id, projectId), eq(projects.ownerEmail, owner)));
+    return textResult(`${agentIds.length}名のAIを事業チームへ配属しました。`, { projectId, agentIds });
   }
   if (name === "save_agent") {
     const agentName = clean(args.name, 80); const role = clean(args.role, 120); const department = clean(args.department, 80);
