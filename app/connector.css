@@ -1,0 +1,79 @@
+.connector-modal h2 {
+  font-family: "Yu Mincho", serif;
+  font-size: 24px;
+  margin: 10px 0;
+}
+
+.connector-badge {
+  display: inline-block;
+  color: var(--green);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .17em;
+}
+
+.connector-lead {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.8;
+}
+
+.endpoint-box {
+  margin: 14px 0;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f1eee6;
+}
+
+.endpoint-box small,
+.endpoint-box code {
+  display: block;
+}
+
+.endpoint-box small {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 8px;
+  letter-spacing: .12em;
+}
+
+.endpoint-box code {
+  color: var(--green);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.tool-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.tool-preview b { font-size: 10px; }
+.tool-preview span {
+  position: relative;
+  padding-left: 12px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.tool-preview span::before {
+  position: absolute;
+  left: 0;
+  color: var(--green);
+  content: "→";
+}
+
+.connector-note {
+  margin: 14px 0;
+  padding: 12px;
+  border-radius: 7px;
+  background: #e8eee8;
+}
+.connector-note b { color: var(--green); font-size: 10px; }
+.connector-note p { margin: 4px 0 0; color: var(--muted); font-size: 9px; line-height: 1.6; }
+.full-btn { width: 100%; }
