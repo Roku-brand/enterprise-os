@@ -11,7 +11,7 @@ type Project = {
 };
 type Agent = {
   id: string; name: string; role: string; department: string; persona: string;
-  reportingStyle: string; active: boolean; updatedAt: string;
+  reportingStyle: string; active: boolean; repositoryWriteEnabled: boolean; updatedAt: string;
 };
 type Report = {
   id: string; department: string; title: string; body: string; status: string;
@@ -113,7 +113,7 @@ function AgentsView({ data, open, remove }: { data: OrganizationData; open: (sta
   return <section className="view-section"><div className="section-intro"><div><p>AI WORKFORCE</p><h2>エージェント設定</h2><span>名前・役割・人格・報告スタイルを実運用に合わせて保存します。</span></div><button className="primary-btn" onClick={() => open({ entity: "agent" })}>＋ エージェントを追加</button></div>
     {data.agents.length ? <div className="record-grid agent-record-grid">{data.agents.map((agent) => <article className="record-card agent-record" key={agent.id}>
       <div className="agent-identity"><span>{agent.name.slice(0, 1)}</span><div><small>{agent.department}</small><h3>{agent.name}</h3><b>{agent.role}</b></div><em className={agent.active ? "active-label" : "paused-label"}>{agent.active ? "稼働" : "停止"}</em></div>
-      <p>{agent.persona || "人格・行動原則は未設定です。"}</p><dl><div><dt>配属先</dt><dd>{data.projects.filter((project) => projectTeam(project, [agent]).length).map((project) => project.name).join("、") || "未配属"}</dd></div><div><dt>報告スタイル</dt><dd>{agent.reportingStyle}</dd></div></dl>
+      <p>{agent.persona || "人格・行動原則は未設定です。"}</p><dl><div><dt>配属先</dt><dd>{data.projects.filter((project) => projectTeam(project, [agent]).length).map((project) => project.name).join("、") || "未配属"}</dd></div><div><dt>GitHub</dt><dd className={agent.repositoryWriteEnabled ? "permission-on" : "permission-off"}>{agent.repositoryWriteEnabled ? "編集許可" : "参照のみ"}</dd></div><div><dt>報告スタイル</dt><dd>{agent.reportingStyle}</dd></div></dl>
       <div className="card-actions"><button className="outline-btn" onClick={() => open({ entity: "agent", item: agent })}>設定を編集</button><button className="danger-btn" onClick={() => remove("agent", agent.id)}>削除</button></div>
     </article>)}</div> : <Empty title="AIエージェントがいません" body="実際に使う役割だけを登録し、不要な架空メンバーは表示しません。" action="最初のAIを追加" onAction={() => open({ entity: "agent" })}/>}
   </section>;
@@ -128,12 +128,16 @@ function EntityModal({ state, data, close, saved }: { state: NonNullable<ModalSt
     reportingStyle: item?.reportingStyle ?? "結論から簡潔に",
     active: item?.active ?? true,
     agentIds: item?.agentIds ?? (item?.ownerAgentId ? [item.ownerAgentId] : []),
+    projectIds: state.entity === "agent" && item?.id ? data.projects.filter((project) => projectTeam(project, data.agents).some((agent) => agent.id === item.id)).map((project) => project.id) : [],
+    repositoryWriteEnabled: item?.repositoryWriteEnabled ?? false,
   }));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const set = (key: string, value: unknown) => setForm((current) => ({ ...current, [key]: value }));
   const selectedAgentIds = Array.isArray(form.agentIds) ? form.agentIds.filter((id): id is string => typeof id === "string") : [];
+  const selectedProjectIds = Array.isArray(form.projectIds) ? form.projectIds.filter((id): id is string => typeof id === "string") : [];
   const toggleAgent = (id: string) => set("agentIds", selectedAgentIds.includes(id) ? selectedAgentIds.filter((current) => current !== id) : [...selectedAgentIds, id]);
+  const toggleProject = (id: string) => set("projectIds", selectedProjectIds.includes(id) ? selectedProjectIds.filter((current) => current !== id) : [...selectedProjectIds, id]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
@@ -155,10 +159,13 @@ function EntityModal({ state, data, close, saved }: { state: NonNullable<ModalSt
     </>}
     {state.entity === "agent" && <>
       <div className="form-row"><label>名前<input required value={String(form.name ?? "")} onChange={(e) => set("name", e.target.value)}/></label><label>部署<select value={String(form.department)} onChange={(e) => set("department", e.target.value)}>{[...departments, "プロダクト", "事業チーム"].map((value) => <option key={value}>{value}</option>)}</select></label></div>
+      {form.department === "事業チーム" && <fieldset className="project-picker"><legend>配属先プロジェクト</legend>{data.projects.length ? <div>{data.projects.map((project) => <label key={project.id} className={selectedProjectIds.includes(project.id) ? "selected" : ""}><input type="checkbox" checked={selectedProjectIds.includes(project.id)} onChange={() => toggleProject(project.id)}/><span>{project.name.slice(0, 1)}</span><b>{project.name}<small>{project.repositoryUrl ? "GitHub連携済み" : "GitHub未連携"}</small></b></label>)}</div> : <p>先に「プロジェクト」から事業を登録してください。</p>}</fieldset>}
       <label>役割<input required value={String(form.role ?? "")} onChange={(e) => set("role", e.target.value)} placeholder="例：CFOエージェント"/></label>
       <label>人格・行動原則<textarea value={String(form.persona ?? "")} onChange={(e) => set("persona", e.target.value)} placeholder="判断基準、口調、避ける行動"/></label>
       <label>報告スタイル<select value={String(form.reportingStyle)} onChange={(e) => set("reportingStyle", e.target.value)}><option>結論から簡潔に</option><option>根拠とリスクを添える</option><option>対話しながら提案する</option><option>選択肢を比較して示す</option></select></label>
       <label className="check-label"><input type="checkbox" checked={Boolean(form.active)} onChange={(e) => set("active", e.target.checked)}/>稼働中として表示する</label>
+      <label className="check-label permission-check"><input type="checkbox" checked={Boolean(form.repositoryWriteEnabled)} onChange={(e) => set("repositoryWriteEnabled", e.target.checked)}/>配属先のGitHubリポジトリ編集を許可する</label>
+      {Boolean(form.repositoryWriteEnabled) && <p className="permission-note">ChatGPTは配属先と権限を確認してから、接続済みGitHubを通じて編集します。</p>}
     </>}
     {state.entity === "report" && <>
       <div className="form-row"><label>部署<select value={String(form.department)} onChange={(e) => set("department", e.target.value)}>{departments.map((value) => <option key={value}>{value}</option>)}</select></label><label>状態<select value={String(form.status)} onChange={(e) => set("status", e.target.value)}>{["要対応", "進行中", "完了"].map((value) => <option key={value}>{value}</option>)}</select></label></div>
