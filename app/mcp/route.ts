@@ -27,6 +27,16 @@ const tools = [
     annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
   },
   {
+    name: "prepare_repository_edit", title: "配属AIのリポジトリ編集権限を確認",
+    description: "AIエージェントが対象事業へ配属され、GitHub編集を許可されているか確認し、接続済みGitHubで作業するためのコンテキストを返します。実際の編集前に必ず呼び出してください。",
+    inputSchema: { type: "object", properties: {
+      projectId: { type: "string", description: "対象プロジェクトのID" },
+      agentId: { type: "string", description: "作業するAIエージェントのID" },
+      task: { type: "string", description: "予定している編集内容" },
+    }, required: ["projectId", "agentId", "task"], additionalProperties: false }, securitySchemes: readSecurity,
+    annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+  },
+  {
     name: "create_project", title: "事業プロジェクトを登録",
     description: "新しい事業プロジェクトを永続保存します。架空の進捗率や売上は登録しません。",
     inputSchema: { type: "object", properties: {
@@ -78,6 +88,10 @@ function rpcError(id: unknown, code: number, message: string, status = 200) { re
 function textResult(text: string, structuredContent: unknown) { return { content: [{ type: "text", text }], structuredContent }; }
 function clean(value: unknown, max = 4000) { return typeof value === "string" ? value.trim().slice(0, max) : ""; }
 function idList(value: unknown) { return Array.isArray(value) ? [...new Set(value.map((item) => clean(item, 80)).filter(Boolean))].slice(0, 50) : []; }
+function repositoryName(url: string) {
+  const match = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/#?]+?)(?:\.git)?\/?$/i);
+  return match ? `${match[1]}/${match[2]}` : null;
+}
 
 function ownerEmail() {
   const value = process.env.APP_OWNER_EMAIL?.trim().toLowerCase();
@@ -111,6 +125,27 @@ async function toolResult(name: string, args: Record<string, unknown>) {
     const assignments = rows.length ? await db.select().from(projectAgents).where(eq(projectAgents.ownerEmail, owner)) : [];
     const withTeams = rows.map((project) => ({ ...project, agentIds: assignments.filter((row) => ids.has(row.projectId) && row.projectId === project.id).map((row) => row.agentId) }));
     return textResult(rows.length ? `${rows.length}件の事業が見つかりました。` : "一致する事業はありません。", { projects: withTeams });
+  }
+  if (name === "prepare_repository_edit") {
+    const projectId = clean(args.projectId, 80); const agentId = clean(args.agentId, 80); const task = clean(args.task, 1000);
+    if (!projectId || !agentId || !task) return { isError: true, content: [{ type: "text", text: "プロジェクト、AIエージェント、編集内容を指定してください。" }] };
+    const [projectRows, agentRows, assignmentRows] = await Promise.all([
+      db.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.ownerEmail, owner))).limit(1),
+      db.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.ownerEmail, owner))).limit(1),
+      db.select().from(projectAgents).where(and(eq(projectAgents.projectId, projectId), eq(projectAgents.agentId, agentId), eq(projectAgents.ownerEmail, owner))).limit(1),
+    ]);
+    const project = projectRows[0]; const agent = agentRows[0];
+    if (!project || !agent) return { isError: true, content: [{ type: "text", text: "指定した事業またはAIエージェントが見つかりません。" }] };
+    if (!assignmentRows.length) return { isError: true, content: [{ type: "text", text: `${agent.name}は${project.name}へ配属されていません。先に事業チームへ配属してください。` }] };
+    if (!agent.active) return { isError: true, content: [{ type: "text", text: `${agent.name}は停止中です。` }] };
+    if (!agent.repositoryWriteEnabled) return { isError: true, content: [{ type: "text", text: `${agent.name}にはGitHub編集権限がありません。エージェント設定で許可してください。` }] };
+    const repository = repositoryName(project.repositoryUrl);
+    if (!repository) return { isError: true, content: [{ type: "text", text: `${project.name}に有効なGitHubリポジトリURLが登録されていません。` }] };
+    return textResult(`${agent.name}の配属とGitHub編集権限を確認しました。接続済みGitHubで変更内容を確認し、ブランチとPRを使って作業してください。`, {
+      authorized: true, repository, repositoryUrl: project.repositoryUrl, project: { id: project.id, name: project.name },
+      agent: { id: agent.id, name: agent.name, role: agent.role, persona: agent.persona, reportingStyle: agent.reportingStyle }, task,
+      guardrails: ["既定ブランチへ直接変更せず、作業ブランチを使用する", "変更内容を確認してからコミットする", "機密情報をコードへ保存しない"],
+    });
   }
   if (name === "create_project") {
     const projectName = clean(args.name, 120);
