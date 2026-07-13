@@ -15,6 +15,7 @@ export const agents = sqliteTable("agents", {
   persona: text("persona").notNull().default(""),
   reportingStyle: text("reporting_style").notNull().default("結論から簡潔に"),
   active: integer("active", { mode: "boolean" }).notNull().default(true),
+  repositoryWriteEnabled: integer("repository_write_enabled", { mode: "boolean" }).notNull().default(false),
   ...timestamps,
 }, (table) => [index("agents_owner_email_idx").on(table.ownerEmail)]);
 
