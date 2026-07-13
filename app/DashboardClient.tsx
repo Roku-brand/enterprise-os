@@ -7,7 +7,7 @@ type Entity = "project" | "agent" | "report";
 
 type Project = {
   id: string; name: string; summary: string; repositoryUrl: string;
-  status: string; ownerAgentId: string | null; updatedAt: string;
+  status: string; ownerAgentId: string | null; agentIds: string[]; updatedAt: string;
 };
 type Agent = {
   id: string; name: string; role: string; department: string; persona: string;
@@ -35,6 +35,11 @@ function formatDate(value: string) {
 
 function agentName(agents: Agent[], id: string | null) {
   return agents.find((agent) => agent.id === id)?.name ?? "未設定";
+}
+
+function projectTeam(project: Project, agents: Agent[]) {
+  const ids = project.agentIds?.length ? project.agentIds : project.ownerAgentId ? [project.ownerAgentId] : [];
+  return ids.map((id) => agents.find((agent) => agent.id === id)).filter((agent): agent is Agent => Boolean(agent));
 }
 
 function Empty({ title, body, action, onAction }: { title: string; body: string; action: string; onAction: () => void }) {
@@ -67,7 +72,7 @@ function HomeView({ data, open }: { data: OrganizationData; open: (state: ModalS
       <article className="panel operational-panel">
         <div className="panel-heading"><div><small>ACTIVE PROJECTS</small><h2>進行中の事業</h2></div><button className="outline-btn" onClick={() => open({ entity: "project" })}>＋ 事業を追加</button></div>
         {activeProjects.length ? <div className="compact-list">{activeProjects.map((project) => <button key={project.id} onClick={() => open({ entity: "project", item: project })}>
-          <span><b>{project.name}</b><small>{project.summary || "説明未登録"}</small></span><em className={`status-tag status-${project.status}`}>{project.status}</em>
+          <span><b>{project.name}</b><small>{projectTeam(project, data.agents).length ? `${projectTeam(project, data.agents).length}名のAIチーム` : project.summary || "説明未登録"}</small></span><em className={`status-tag status-${project.status}`}>{project.status}</em>
         </button>)}</div> : <Empty title="進行中の事業はありません" body="実際に運営している事業とGitHubリポジトリを登録してください。" action="事業を追加" onAction={() => open({ entity: "project" })}/>}
       </article>
     </section>
@@ -85,7 +90,8 @@ function ProjectsView({ data, open, remove }: { data: OrganizationData; open: (s
     {data.projects.length ? <div className="record-grid">{data.projects.map((project) => <article className="record-card" key={project.id}>
       <div className="record-top"><span className="record-icon">{project.name.slice(0, 1)}</span><span className={`status-tag status-${project.status}`}>{project.status}</span></div>
       <h3>{project.name}</h3><p>{project.summary || "説明はまだ登録されていません。"}</p>
-      <dl><div><dt>担当AI</dt><dd>{agentName(data.agents, project.ownerAgentId)}</dd></div><div><dt>最終更新</dt><dd>{formatDate(project.updatedAt)}</dd></div></dl>
+      <div className="project-team"><small>事業チーム</small>{projectTeam(project, data.agents).length ? <div>{projectTeam(project, data.agents).map((agent) => <span key={agent.id} title={`${agent.role}・${agent.department}`}><b>{agent.name.slice(0, 1)}</b>{agent.name}</span>)}</div> : <p>AIエージェント未配属</p>}</div>
+      <dl><div><dt>配属人数</dt><dd>{projectTeam(project, data.agents).length}名</dd></div><div><dt>最終更新</dt><dd>{formatDate(project.updatedAt)}</dd></div></dl>
       {project.repositoryUrl ? <a className="repo-link" href={project.repositoryUrl} target="_blank" rel="noreferrer">GitHubを開く ↗</a> : <span className="repo-missing">GitHub未連携</span>}
       <div className="card-actions"><button className="outline-btn" onClick={() => open({ entity: "project", item: project })}>編集</button><button className="danger-btn" onClick={() => remove("project", project.id)}>削除</button></div>
     </article>)}</div> : <Empty title="事業が登録されていません" body="売上などの架空データは置かず、登録した事業だけを表示します。" action="最初の事業を追加" onAction={() => open({ entity: "project" })}/>}
@@ -107,7 +113,7 @@ function AgentsView({ data, open, remove }: { data: OrganizationData; open: (sta
   return <section className="view-section"><div className="section-intro"><div><p>AI WORKFORCE</p><h2>エージェント設定</h2><span>名前・役割・人格・報告スタイルを実運用に合わせて保存します。</span></div><button className="primary-btn" onClick={() => open({ entity: "agent" })}>＋ エージェントを追加</button></div>
     {data.agents.length ? <div className="record-grid agent-record-grid">{data.agents.map((agent) => <article className="record-card agent-record" key={agent.id}>
       <div className="agent-identity"><span>{agent.name.slice(0, 1)}</span><div><small>{agent.department}</small><h3>{agent.name}</h3><b>{agent.role}</b></div><em className={agent.active ? "active-label" : "paused-label"}>{agent.active ? "稼働" : "停止"}</em></div>
-      <p>{agent.persona || "人格・行動原則は未設定です。"}</p><dl><div><dt>報告スタイル</dt><dd>{agent.reportingStyle}</dd></div></dl>
+      <p>{agent.persona || "人格・行動原則は未設定です。"}</p><dl><div><dt>配属先</dt><dd>{data.projects.filter((project) => projectTeam(project, [agent]).length).map((project) => project.name).join("、") || "未配属"}</dd></div><div><dt>報告スタイル</dt><dd>{agent.reportingStyle}</dd></div></dl>
       <div className="card-actions"><button className="outline-btn" onClick={() => open({ entity: "agent", item: agent })}>設定を編集</button><button className="danger-btn" onClick={() => remove("agent", agent.id)}>削除</button></div>
     </article>)}</div> : <Empty title="AIエージェントがいません" body="実際に使う役割だけを登録し、不要な架空メンバーは表示しません。" action="最初のAIを追加" onAction={() => open({ entity: "agent" })}/>}
   </section>;
@@ -121,10 +127,13 @@ function EntityModal({ state, data, close, saved }: { state: NonNullable<ModalSt
     status: item?.status ?? (state.entity === "project" ? "未着手" : "要対応"),
     reportingStyle: item?.reportingStyle ?? "結論から簡潔に",
     active: item?.active ?? true,
+    agentIds: item?.agentIds ?? (item?.ownerAgentId ? [item.ownerAgentId] : []),
   }));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const set = (key: string, value: unknown) => setForm((current) => ({ ...current, [key]: value }));
+  const selectedAgentIds = Array.isArray(form.agentIds) ? form.agentIds.filter((id): id is string => typeof id === "string") : [];
+  const toggleAgent = (id: string) => set("agentIds", selectedAgentIds.includes(id) ? selectedAgentIds.filter((current) => current !== id) : [...selectedAgentIds, id]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
@@ -141,7 +150,8 @@ function EntityModal({ state, data, close, saved }: { state: NonNullable<ModalSt
       <label>プロジェクト名<input required value={String(form.name ?? "")} onChange={(e) => set("name", e.target.value)}/></label>
       <label>説明<textarea value={String(form.summary ?? "")} onChange={(e) => set("summary", e.target.value)} placeholder="目的、提供価値、現在の論点"/></label>
       <label>GitHub URL<input value={String(form.repositoryUrl ?? "")} onChange={(e) => set("repositoryUrl", e.target.value)} placeholder="https://github.com/owner/repository"/></label>
-      <div className="form-row"><label>状態<select value={String(form.status)} onChange={(e) => set("status", e.target.value)}>{["未着手", "進行中", "保留", "完了"].map((value) => <option key={value}>{value}</option>)}</select></label><label>担当AI<select value={String(form.ownerAgentId ?? "")} onChange={(e) => set("ownerAgentId", e.target.value)}><option value="">未設定</option>{data.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label></div>
+      <div className="form-row"><label>状態<select value={String(form.status)} onChange={(e) => set("status", e.target.value)}>{["未着手", "進行中", "保留", "完了"].map((value) => <option key={value}>{value}</option>)}</select></label><div className="team-count"><small>配属人数</small><b>{selectedAgentIds.length}名</b></div></div>
+      <fieldset className="agent-picker"><legend>事業チームに配属するAI</legend>{data.agents.length ? <div>{data.agents.map((agent) => <label key={agent.id} className={selectedAgentIds.includes(agent.id) ? "selected" : ""}><input type="checkbox" checked={selectedAgentIds.includes(agent.id)} onChange={() => toggleAgent(agent.id)}/><span>{agent.name.slice(0, 1)}</span><b>{agent.name}<small>{agent.role} · {agent.department}</small></b></label>)}</div> : <p>先に「エージェント」からAIを登録してください。</p>}</fieldset>
     </>}
     {state.entity === "agent" && <>
       <div className="form-row"><label>名前<input required value={String(form.name ?? "")} onChange={(e) => set("name", e.target.value)}/></label><label>部署<select value={String(form.department)} onChange={(e) => set("department", e.target.value)}>{[...departments, "プロダクト", "事業チーム"].map((value) => <option key={value}>{value}</option>)}</select></label></div>
