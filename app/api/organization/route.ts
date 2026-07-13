@@ -37,6 +37,21 @@ async function replaceProjectAgents(db: Awaited<ReturnType<typeof getDb>>, owner
   return agentIds;
 }
 
+async function validProjectIds(db: Awaited<ReturnType<typeof getDb>>, ownerEmail: string, value: unknown) {
+  const requested = idList(value);
+  if (!requested.length) return [];
+  const rows = await db.select({ id: projects.id }).from(projects).where(eq(projects.ownerEmail, ownerEmail));
+  const allowed = new Set(rows.map((row) => row.id));
+  return requested.filter((id) => allowed.has(id));
+}
+
+async function replaceAgentProjects(db: Awaited<ReturnType<typeof getDb>>, ownerEmail: string, agentId: string, value: unknown) {
+  const projectIds = await validProjectIds(db, ownerEmail, value);
+  await db.delete(projectAgents).where(and(eq(projectAgents.agentId, agentId), eq(projectAgents.ownerEmail, ownerEmail)));
+  if (projectIds.length) await db.insert(projectAgents).values(projectIds.map((projectId) => ({ ownerEmail, projectId, agentId })));
+  return projectIds;
+}
+
 function apiError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unexpected error";
   const migrationMissing = message.includes("no such table");
@@ -114,8 +129,10 @@ export async function POST(request: Request) {
         persona: clean(payload.persona),
         reportingStyle: clean(payload.reportingStyle, 120) || "結論から簡潔に",
         active: payload.active === undefined ? true : booleanValue(payload.active),
+        repositoryWriteEnabled: booleanValue(payload.repositoryWriteEnabled),
       }).returning();
-      return Response.json({ item: row }, { status: 201 });
+      const projectIds = department === "事業チーム" ? await replaceAgentProjects(db, ownerEmail, id, payload.projectIds) : [];
+      return Response.json({ item: { ...row, projectIds } }, { status: 201 });
     }
 
     if (payload.entity === "report") {
@@ -162,7 +179,8 @@ export async function PUT(request: Request) {
       const role = clean(payload.role, 120);
       const department = clean(payload.department, 80);
       if (!name || !role || !department) return Response.json({ error: "名前・役割・部署は必須です。" }, { status: 400 });
-      await db.update(agents).set({ name, role, department, persona: clean(payload.persona), reportingStyle: clean(payload.reportingStyle, 120) || "結論から簡潔に", active: booleanValue(payload.active), updatedAt }).where(and(eq(agents.id, id), eq(agents.ownerEmail, ownerEmail)));
+      await db.update(agents).set({ name, role, department, persona: clean(payload.persona), reportingStyle: clean(payload.reportingStyle, 120) || "結論から簡潔に", active: booleanValue(payload.active), repositoryWriteEnabled: booleanValue(payload.repositoryWriteEnabled), updatedAt }).where(and(eq(agents.id, id), eq(agents.ownerEmail, ownerEmail)));
+      await replaceAgentProjects(db, ownerEmail, id, department === "事業チーム" ? payload.projectIds : []);
     } else if (payload.entity === "report") {
       const department = clean(payload.department, 80);
       const title = clean(payload.title, 160);
