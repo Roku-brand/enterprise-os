@@ -15,6 +15,13 @@
       "when": 1783934279906,
       "tag": "0001_dear_solo",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783939462318,
+      "tag": "0002_hot_ezekiel",
+      "breakpoints": true
     }
   ]
 }
