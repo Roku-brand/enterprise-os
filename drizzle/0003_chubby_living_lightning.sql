@@ -1,0 +1,1 @@
+ALTER TABLE `agents` ADD `repository_write_enabled` integer DEFAULT false NOT NULL;
