@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "../../../db";
-import { agents, projects, reports } from "../../../db/schema";
+import { agents, projectAgents, projects, reports } from "../../../db/schema";
 import { configuredOwnerEmail, getChatGPTUser } from "../../chatgpt-auth";
 
 const projectStatuses = new Set(["未着手", "進行中", "保留", "完了"]);
@@ -15,6 +15,26 @@ function clean(value: unknown, max = 4000) {
 
 function booleanValue(value: unknown) {
   return value === true || value === 1 || value === "true";
+}
+
+function idList(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => clean(item, 80)).filter(Boolean))].slice(0, 50);
+}
+
+async function validAgentIds(db: Awaited<ReturnType<typeof getDb>>, ownerEmail: string, value: unknown) {
+  const requested = idList(value);
+  if (!requested.length) return [];
+  const rows = await db.select({ id: agents.id }).from(agents).where(eq(agents.ownerEmail, ownerEmail));
+  const allowed = new Set(rows.map((row) => row.id));
+  return requested.filter((id) => allowed.has(id));
+}
+
+async function replaceProjectAgents(db: Awaited<ReturnType<typeof getDb>>, ownerEmail: string, projectId: string, value: unknown) {
+  const agentIds = await validAgentIds(db, ownerEmail, value);
+  await db.delete(projectAgents).where(and(eq(projectAgents.projectId, projectId), eq(projectAgents.ownerEmail, ownerEmail)));
+  if (agentIds.length) await db.insert(projectAgents).values(agentIds.map((agentId) => ({ ownerEmail, projectId, agentId })));
+  return agentIds;
 }
 
 function apiError(error: unknown) {
@@ -41,12 +61,17 @@ export async function GET() {
 
   try {
     const db = await getDb();
-    const [projectRows, agentRows, reportRows] = await Promise.all([
+    const [projectRows, agentRows, reportRows, assignmentRows] = await Promise.all([
       db.select().from(projects).where(eq(projects.ownerEmail, ownerEmail)).orderBy(desc(projects.updatedAt)),
       db.select().from(agents).where(eq(agents.ownerEmail, ownerEmail)).orderBy(desc(agents.updatedAt)),
       db.select().from(reports).where(eq(reports.ownerEmail, ownerEmail)).orderBy(desc(reports.updatedAt)),
+      db.select().from(projectAgents).where(eq(projectAgents.ownerEmail, ownerEmail)),
     ]);
-    return Response.json({ projects: projectRows, agents: agentRows, reports: reportRows });
+    const projectsWithTeams = projectRows.map((project) => ({
+      ...project,
+      agentIds: assignmentRows.filter((row) => row.projectId === project.id).map((row) => row.agentId),
+    }));
+    return Response.json({ projects: projectsWithTeams, agents: agentRows, reports: reportRows });
   } catch (error) {
     return apiError(error);
   }
@@ -69,12 +94,14 @@ export async function POST(request: Request) {
         return Response.json({ error: "GitHub URLは https://github.com/ から入力してください。" }, { status: 400 });
       }
       const status = clean(payload.status, 20);
+      const selectedAgentIds = await validAgentIds(db, ownerEmail, payload.agentIds);
       const [row] = await db.insert(projects).values({
         id, ownerEmail, name, repositoryUrl, summary: clean(payload.summary),
         status: projectStatuses.has(status) ? status : "未着手",
-        ownerAgentId: clean(payload.ownerAgentId, 80) || null,
+        ownerAgentId: selectedAgentIds[0] ?? (clean(payload.ownerAgentId, 80) || null),
       }).returning();
-      return Response.json({ item: row }, { status: 201 });
+      const agentIds = await replaceProjectAgents(db, ownerEmail, id, selectedAgentIds);
+      return Response.json({ item: { ...row, agentIds } }, { status: 201 });
     }
 
     if (payload.entity === "agent") {
@@ -127,7 +154,9 @@ export async function PUT(request: Request) {
       if (!name) return Response.json({ error: "プロジェクト名は必須です。" }, { status: 400 });
       if (repositoryUrl && !repositoryUrl.startsWith("https://github.com/")) return Response.json({ error: "GitHub URLを確認してください。" }, { status: 400 });
       const status = clean(payload.status, 20);
-      await db.update(projects).set({ name, repositoryUrl, summary: clean(payload.summary), status: projectStatuses.has(status) ? status : "未着手", ownerAgentId: clean(payload.ownerAgentId, 80) || null, updatedAt }).where(and(eq(projects.id, id), eq(projects.ownerEmail, ownerEmail)));
+      const selectedAgentIds = await validAgentIds(db, ownerEmail, payload.agentIds);
+      await db.update(projects).set({ name, repositoryUrl, summary: clean(payload.summary), status: projectStatuses.has(status) ? status : "未着手", ownerAgentId: selectedAgentIds[0] ?? null, updatedAt }).where(and(eq(projects.id, id), eq(projects.ownerEmail, ownerEmail)));
+      await replaceProjectAgents(db, ownerEmail, id, selectedAgentIds);
     } else if (payload.entity === "agent") {
       const name = clean(payload.name, 80);
       const role = clean(payload.role, 120);
@@ -158,8 +187,13 @@ export async function DELETE(request: Request) {
     const entity = url.searchParams.get("entity") as Entity | null;
     const id = url.searchParams.get("id") ?? "";
     const db = await getDb();
-    if (entity === "project") await db.delete(projects).where(and(eq(projects.id, id), eq(projects.ownerEmail, ownerEmail)));
-    else if (entity === "agent") await db.delete(agents).where(and(eq(agents.id, id), eq(agents.ownerEmail, ownerEmail)));
+    if (entity === "project") {
+      await db.delete(projectAgents).where(and(eq(projectAgents.projectId, id), eq(projectAgents.ownerEmail, ownerEmail)));
+      await db.delete(projects).where(and(eq(projects.id, id), eq(projects.ownerEmail, ownerEmail)));
+    } else if (entity === "agent") {
+      await db.delete(projectAgents).where(and(eq(projectAgents.agentId, id), eq(projectAgents.ownerEmail, ownerEmail)));
+      await db.delete(agents).where(and(eq(agents.id, id), eq(agents.ownerEmail, ownerEmail)));
+    }
     else if (entity === "report") await db.delete(reports).where(and(eq(reports.id, id), eq(reports.ownerEmail, ownerEmail)));
     else return Response.json({ error: "Unknown entity" }, { status: 400 });
     return Response.json({ ok: true });
