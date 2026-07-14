@@ -131,7 +131,7 @@ export async function POST(request: Request) {
         active: payload.active === undefined ? true : booleanValue(payload.active),
         repositoryWriteEnabled: booleanValue(payload.repositoryWriteEnabled),
       }).returning();
-      const projectIds = department === "事業チーム" ? await replaceAgentProjects(db, ownerEmail, id, payload.projectIds) : [];
+      const projectIds = await replaceAgentProjects(db, ownerEmail, id, payload.projectIds);
       return Response.json({ item: { ...row, projectIds } }, { status: 201 });
     }
 
@@ -180,7 +180,7 @@ export async function PUT(request: Request) {
       const department = clean(payload.department, 80);
       if (!name || !role || !department) return Response.json({ error: "名前・役割・部署は必須です。" }, { status: 400 });
       await db.update(agents).set({ name, role, department, persona: clean(payload.persona), reportingStyle: clean(payload.reportingStyle, 120) || "結論から簡潔に", active: booleanValue(payload.active), repositoryWriteEnabled: booleanValue(payload.repositoryWriteEnabled), updatedAt }).where(and(eq(agents.id, id), eq(agents.ownerEmail, ownerEmail)));
-      await replaceAgentProjects(db, ownerEmail, id, department === "事業チーム" ? payload.projectIds : []);
+      await replaceAgentProjects(db, ownerEmail, id, payload.projectIds);
     } else if (payload.entity === "report") {
       const department = clean(payload.department, 80);
       const title = clean(payload.title, 160);
